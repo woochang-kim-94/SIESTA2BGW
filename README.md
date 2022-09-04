@@ -1,5 +1,5 @@
 # SIESTA2BGW
-Convert wavefuntion files in planewave basis from SIESTA output files.
+Generate wavefuntions in planewave basis from SIESTA calculations.
 
 ## Usage
 1. Run SIESTA and generate '.ion' and '.bands.WFSX' files.
