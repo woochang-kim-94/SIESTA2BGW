@@ -1,0 +1,44 @@
+%YAML 1.2
+---
+
+siesta:
+  version: "5.0.0-alpha-45-gffa4e7d86"
+  arch: "build-mk-scheme"
+  compiler: "ifort (IFORT) 19.1.1.217 20200306"
+  fflags: "mpiifort -g -traceback -O2 -prec-div -prec-sqrt -fp-model source -xCORE-AVX512 -qopenmp"
+  fppflags: "-DF2003  -DCDF  -DNCDF -DNCDF_4 -DMPI -DMPI_TIMING"
+  libs: "libncdf.a libfdict.a  -L/opt/apps/intel19/impi19_0/parallel-netcdf/4.9.0/x86_64/lib -lnetcdf -lnetcdff -L/opt/intel/compilers_and_libraries_2020.1.217/linux/mkl/lib/intel64 -lmkl_scalapack_lp64 -lmkl_intel_lp64 -lmkl_intel_thread -lmkl_core -lmkl_blacs_intelmpi_lp64 -liomp5 -lpthread -lm -ldl -L/opt/intel/compilers_and_libraries_2020.1.217/linux/mkl/lib/intel64 -lmkl_scalapack_lp64 -lmkl_intel_lp64 -lmkl_intel_thread -lmkl_core -lmkl_blacs_intelmpi_lp64 -liomp5 -lpthread -lm -ldl"
+  build: "mpi"
+  openmp: "yes"
+  gemm3m: "no"
+  netcdf: "yes"
+  netcdf4: "yes"
+  netcdf4_mpi: "no"
+  metis: "no"
+  chess: "no"
+  elpa: "no"
+  flook: "no"
+  pexsi: "no"
+
+energies:
+  Ebs:          -0.12053284E+03
+  Eions:           0.78495520E+03
+  Ena:           0.10787349E+03
+  Ekin:           0.35275867E+03
+  Enl:          -0.18565481E+03
+  Eso:           0.00000000E+00
+  Edftu:           0.00000000E+00
+  DEna:           0.32849962E+01
+  DUscf:           0.63576646E-01
+  DUext:           0.00000000E+00
+  Exc:          -0.13003866E+03
+  Ecorrec:           0.00000000E+00
+  Emadel:           0.00000000E+00
+  Emeta:           0.00000000E+00
+  Emolmec:           0.00000000E+00
+  Ekinion:           0.00000000E+00
+  Eharris:          -0.63666793E+03
+  Etot:          -0.63666793E+03
+  FreeEng:          -0.63666793E+03
+
+...

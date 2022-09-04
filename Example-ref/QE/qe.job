@@ -1,0 +1,13 @@
+#!/bin/bash 
+#SBATCH -J qe                                # job name
+#SBATCH -N 1                                 # request nodes 
+#SBATCH --ntasks-per-node 56                 # MPI tasks per node
+#SBATCH -p development                              # submit to "normal, development, flex, " queue 
+#SBATCH -t 00:30:00                          # wall clock time for job. 
+#SBATCH --mail-user=wkim94.hpc.job@gmail.com
+#SBATCH --mail-type=all
+
+export OMP_NUM_THREADS=1
+
+#ibrun ~/codes/qe-7.0-scalapack-hdf5-openmp/bin/pw.x -nk < pw.scf.in > pw.scf.out
+sh run.sh
