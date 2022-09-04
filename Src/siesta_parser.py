@@ -50,8 +50,6 @@ class SiestaParser:
 
         return None
 
-
-
     def read_wfsx(self):
         """Parse a WFSX file and save the information as attributes."""
 

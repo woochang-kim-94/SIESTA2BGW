@@ -18,6 +18,7 @@ def main():
     if comm.rank == 0:
         print(f'##################SIESTA2BGW###################')
         print(f'Under developing.... ')
+        print(f'Supports non-colinear calculation')
         print(f'W. Kim, M. Naik, 2022/08/30')
         print(f"Motivated by the Y.W.Choi's unfold.py code")
         print(f'Parameters')
@@ -27,11 +28,12 @@ def main():
     ################################################
     fdf_file = f'./input.fdf'
     ecut = 40.0*13.605693122994  # eV; good to be matched with the ecutwfc of QE
-    lowest_band = 18             # lowest_band in WFSX file
-    highest_band = 30            # highest_band in WFSX file
+    lowest_band  = 37             # lowest_band in WFSX file
+    highest_band = 56            # highest_band in WFSX file
     #ik , ibnd = 31, 23           # both of them starting from 1
     ibnd_lst = list(range(lowest_band, highest_band+1))
     ik_lst = list(range(1,92))
+    #ik_lst = [31]
     #print('ik, ibnd:', ik, ibnd)
     if comm.rank == 0:
         print('ik_lst, ibnd_lst', ik_lst, ibnd_lst)
@@ -81,13 +83,18 @@ class Unfold:
 
 
         #########SiestaParser###############
-        wfsx_fn = f'./readwfx.stdout'
-        self.myparser = SiestaParser(wfsx_file_name=wfsx_fn)
+        self.wfsx_txt_file = f'{self.outdir}/{self.system_label}.bands.WFSX.txt'
+        if not os.path.exists(self.wfsx_txt_file):
+            self.error('[Error] .WFSX.txt file not found')
+            return
+        self.myparser = SiestaParser(wfsx_file_name=self.wfsx_txt_file)
 
         self.wfsx_file = f'{self.outdir}/{self.system_label}.bands.WFSX'
         if not os.path.exists(self.wfsx_file):
             self.error('[Error] .WFSX file not found')
             return
+        if comm.rank == 0 and self.myparser.noncolin:
+            print('This calculation is a non-collinear calculation')
 
         # First query information
         self.nspin, self.nou, self.nk, self.Gamma = self._siesta.read_wfsx_sizes(
@@ -148,47 +155,48 @@ class Unfold:
             io2ioa[io] = io-self.geom.atoms.firsto[ia]
             io2isp[io] = self.geom.atoms.specie[ia]
 
-        for ispin in range(1, self.nspin+1):
+        # k is in Bohr^{-1} unit
+        k_bohr = self.myparser.kpoints[ik-1]
+        nwf    = self.myparser.nwf
+        eig    = self.myparser.enk[ik-1,:]
+        state_up  = self.myparser.coeff[ik-1,:,:,0]  # ik, ibnd, nou, ispin
+        coeff_up  = state_up[ibnd_in_wfsx_lst[0]:ibnd_in_wfsx_lst[-1]+1,:]
+        if self.myparser.noncolin:
+            state_dw  = self.myparser.coeff[ik-1,:,:,1]  # ik, ibnd, nou, ispin
+            coeff_dw  = state_dw[ibnd_in_wfsx_lst[0]:ibnd_in_wfsx_lst[-1]+1,:]
 
-            # k is in Bohr^{-1} unit
-            #k_bohr, _, nwf = self._siesta.read_wfsx_index_info(
-            #            self.wfsx_file, ispin, ik)
-            k_bohr = self.myparser.kpoints[ik-1]
-            nwf    = self.myparser.nwf
-            #idx, eig, state = self._read_wfsx(
-            #            self.wfsx_file, ispin, ik, self.nou, nwf)
-            eig    = self.myparser.enk[ik-1,:]
-            state  = self.myparser.coeff[ik-1,:,:,0]  # ik, ibnd, nou, ispin
+        k = k_bohr * Ang2Bohr # Now k is in Ang^{-1} unit
 
-            #coeff = state[:,ibnd_in_wfsx_lst[0]:ibnd_in_wfsx_lst[-1]+1]
-            coeff = state[ibnd_in_wfsx_lst[0]:ibnd_in_wfsx_lst[-1]+1,:]
-            k = k_bohr * Ang2Bohr # Now k is in Ang^{-1} unit
-            #eig_k_b = eig[ibnd_in_wfsx]
-            #print('We are working on the states of eigenvalue:',eig_k_b)
-            if comm.rank == 0:
-                print('Generating FFT grid')
-            igvec_at_k = self.find_igvec_at_k(k, self.bcell, self.ecut)
-            gvec_at_k = igvec_at_k.dot(self.bcell) # Ang^{-1}
-            if comm.rank == 0:
-                print('Number of FFT grid:', len(igvec_at_k))
+        if comm.rank == 0:
+            print('Generating FFT grid')
+        igvec_at_k = self.find_igvec_at_k(k, self.bcell, self.ecut)
+        gvec_at_k = igvec_at_k.dot(self.bcell) # Ang^{-1}
+        if comm.rank == 0:
+            print('Number of FFT grid:', len(igvec_at_k))
 
-            phase = np.zeros(
-            (len(igvec_at_k), len(pos)), dtype=np.cdouble) #len(pos) = # ia
+        phase = np.zeros(
+        (len(igvec_at_k), len(pos)), dtype=np.cdouble) #len(pos) = # ia
 
-            for ig, g in enumerate(gvec_at_k):
-                phase[ig, :] = np.exp(-1j*pos.dot(g))   # gauge convention 1
-                #phase[ig, :] = 1.0                     # gauge convention 2
+        for ig, g in enumerate(gvec_at_k):
+            phase[ig, :] = np.exp(-1j*pos.dot(g))   # gauge convention 1
+            #phase[ig, :] = 1.0                     # gauge convention 2
 
-            unkg = np.zeros((nbnd, len(igvec_at_k)), dtype=np.cdouble)
-            ngs_pp = int(len(igvec_at_k)/comm.size)
-            Grange = range(len(igvec_at_k))
-            ig_rank = []
-            for ip in range(comm.size):
-                ig_rank.append(Grange[ip:len(Grange):comm.size])
+        unkg_up = np.zeros((nbnd, len(igvec_at_k)), dtype=np.cdouble)
+        if self.myparser.noncolin:
+            unkg_dw = np.zeros((nbnd, len(igvec_at_k)), dtype=np.cdouble)
 
-            if comm.rank == 0:
-                print('starting G vector loop')
-            #for ig, g in enumerate(gvec_at_k):
+        ngs_pp = int(len(igvec_at_k)/comm.size)
+        Grange = range(len(igvec_at_k))
+        ig_rank = []
+        for ip in range(comm.size):
+            ig_rank.append(Grange[ip:len(Grange):comm.size])
+
+        if comm.rank == 0:
+            print('starting G vector loop')
+        #for ig, g in enumerate(gvec_at_k):
+
+
+        if self.myparser.noncolin:
             for ig in ig_rank[comm.rank]:
                 #kpg = k+g # in Ang^{-1}
                 gvec = gvec_at_k[ig]
@@ -203,30 +211,83 @@ class Unfold:
 
                 for ibnd in range(len(ibnd_in_wfsx_lst)):
                     #matel = np.einsum('i,i', orbfac, coeff[:,ibnd])
-                    matel = np.einsum('i,i', orbfac, coeff[ibnd,:])
+                    matel_up = np.einsum('i,i', orbfac, coeff_up[ibnd,:])
+                    matel_dw = np.einsum('i,i', orbfac, coeff_dw[ibnd,:])
                     #matel /= np.sqrt(self.geom.volume)
-                    unkg[ibnd,ig] = matel
+                    unkg_up[ibnd,ig] = matel_up
+                    unkg_dw[ibnd,ig] = matel_dw
+
+
             if comm.rank == 0:
-                unkg_coll = np.zeros_like(unkg)
+                unkg_up_coll = np.zeros_like(unkg_up)
+                unkg_dw_coll = np.zeros_like(unkg_dw)
             else:
-                unkg_coll = None
+                unkg_up_coll = None
+                unkg_dw_coll = None
             comm.Reduce(
-                     [unkg, MPI.COMPLEX16],
-                     [unkg_coll, MPI.COMPLEX16],
+                     [unkg_up, MPI.COMPLEX16],
+                     [unkg_up_coll, MPI.COMPLEX16],
+                      op = MPI.SUM,
+                      root = 0
+                    )
+            comm.Reduce(
+                     [unkg_dw, MPI.COMPLEX16],
+                     [unkg_dw_coll, MPI.COMPLEX16],
                       op = MPI.SUM,
                       root = 0
                     )
             if comm.rank == 0:
                 print('end of G vector loop')
 
-        if comm.rank == 0:
-            unkg_coll /= np.sqrt(self.geom.volume)
-            #Renormalization is not necessory but we do anyway...
-            #unkg /= np.linalg.norm(unkg)
+            if comm.rank == 0:
+                unkg = np.concatenate((unkg_up_coll, unkg_dw_coll),axis=1)
+                unkg /= np.sqrt(self.geom.volume)
+                #Renormalization is not necessory but we do anyway...
+                #unkg /= np.linalg.norm(unkg)
+                return unkg, igvec_at_k
+            else:
+                return 0,0
 
-            return unkg_coll, igvec_at_k
+
         else:
-            return 0,0
+            for ig in ig_rank[comm.rank]:
+                #kpg = k+g # in Ang^{-1}
+                gvec = gvec_at_k[ig]
+                kpg = k+gvec # in Ang^{-1}
+                # First we calculate all the FT of PAO basis
+                PAO_FT = self.calc_PAO_FT(kpg) # len(isp) x len(ioa)
+                ftfac = np.zeros(self.nou, dtype=np.cdouble)
+
+                for ia, io in self.geom.iter_orbitals(local=False):
+                    ftfac[io] = PAO_FT[io2isp[io]][io2ioa[io]]
+                orbfac = phase[ig, io2ia[:]] * ftfac # len = num(io)
+
+                for ibnd in range(len(ibnd_in_wfsx_lst)):
+                    matel_up = np.einsum('i,i', orbfac, coeff_up[ibnd,:])
+                    unkg_up[ibnd,ig] = matel_up
+
+
+            if comm.rank == 0:
+                unkg_up_coll = np.zeros_like(unkg_up)
+            else:
+                unkg_up_coll = None
+            comm.Reduce(
+                     [unkg_up, MPI.COMPLEX16],
+                     [unkg_up_coll, MPI.COMPLEX16],
+                      op = MPI.SUM,
+                      root = 0
+                    )
+            if comm.rank == 0:
+                print('end of G vector loop')
+
+            if comm.rank == 0:
+                unkg_up_coll /= np.sqrt(self.geom.volume)
+                #Renormalization is not necessory but we do anyway...
+                #unkg /= np.linalg.norm(unkg)
+
+                return unkg_up_coll, igvec_at_k
+            else:
+                return 0,0
 
 
     def calc_PAO_FT(self, k, nr=500):
