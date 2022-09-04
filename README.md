@@ -1,4 +1,4 @@
-#SIESTA2BGW
+# SIESTA2BGW
 Convert wavefuntion files in planewave basis from SIESTA output files.
 
 ## Usage
