@@ -18,7 +18,7 @@ def main():
     if comm.rank == 0:
         print(f'##################SIESTA2BGW###################')
         print(f'Under developing.... ')
-        print(f'Supports non-colinear calculation')
+        print(f'Non-collinear calculation support')
         print(f'W. Kim, M. Naik, 2022/08/30')
         print(f"Motivated by the Y.W.Choi's unfold.py code")
         print(f'Parameters')
@@ -209,13 +209,16 @@ class Unfold:
                     ftfac[io] = PAO_FT[io2isp[io]][io2ioa[io]]
                 orbfac = phase[ig, io2ia[:]] * ftfac # len = num(io)
 
-                for ibnd in range(len(ibnd_in_wfsx_lst)):
-                    #matel = np.einsum('i,i', orbfac, coeff[:,ibnd])
-                    matel_up = np.einsum('i,i', orbfac, coeff_up[ibnd,:])
-                    matel_dw = np.einsum('i,i', orbfac, coeff_dw[ibnd,:])
-                    #matel /= np.sqrt(self.geom.volume)
-                    unkg_up[ibnd,ig] = matel_up
-                    unkg_dw[ibnd,ig] = matel_dw
+                #for ibnd in range(len(ibnd_in_wfsx_lst)):
+                #    #matel = np.einsum('i,i', orbfac, coeff[:,ibnd])
+                #    matel_up = np.einsum('i,i', orbfac, coeff_up[ibnd,:])
+                #    matel_dw = np.einsum('i,i', orbfac, coeff_dw[ibnd,:])
+                #    #matel /= np.sqrt(self.geom.volume)
+                #    unkg_up[ibnd,ig] = matel_up
+                #    unkg_dw[ibnd,ig] = matel_dw
+
+                unkg_up[:,ig] = np.einsum('i,ni->n', orbfac, coeff_up)
+                unkg_dw[:,ig] = np.einsum('i,ni->n', orbfac, coeff_dw)
 
 
             if comm.rank == 0:
@@ -262,9 +265,11 @@ class Unfold:
                     ftfac[io] = PAO_FT[io2isp[io]][io2ioa[io]]
                 orbfac = phase[ig, io2ia[:]] * ftfac # len = num(io)
 
-                for ibnd in range(len(ibnd_in_wfsx_lst)):
-                    matel_up = np.einsum('i,i', orbfac, coeff_up[ibnd,:])
-                    unkg_up[ibnd,ig] = matel_up
+                #for ibnd in range(len(ibnd_in_wfsx_lst)):
+                #    matel_up = np.einsum('i,i', orbfac, coeff_up[ibnd,:])
+                #    unkg_up[ibnd,ig] = matel_up
+
+                unkg_up[:,ig] = np.einsum('i,ni->n', orbfac, coeff_up)
 
 
             if comm.rank == 0:
