@@ -39,19 +39,21 @@ def main():
         print('ik_lst, ibnd_lst', ik_lst, ibnd_lst)
 
 
-    unfold = Unfold(fdfname=fdf_file,
+    siesta2bgw = Siesta2bgw(fdfname=fdf_file,
             ecut=ecut,
             lowest_band=lowest_band,
             highest_band=highest_band)
     for ik in ik_lst:
-        unkg_blst, miller_ids = unfold.calc_planewave(ik, ibnd_lst)
+        unkg_blst, miller_ids = siesta2bgw.calc_planewave(ik, ibnd_lst)
 
         ########################################################
         # save the wavefunction and FFT grid in numpy format
         ########################################################
         if comm.rank == 0:
-            unkg_blst_fn = 'unkg_blst._ik.{0:03d}._ibndmin.{1:03d}_ibndmax.{2:03d}.txt'.format(ik,ibnd_lst[0],ibnd_lst[-1])
-            miller_ids_fn = 'miller_ids.{0:03d}.txt'.format(ik)
+            if not os.path.exists('Siesta2bgw.save'):
+                os.mkdir('./Siesta2bgw.save')
+            unkg_blst_fn = './Siesta2bgw.save/unkg_blst._ik.{0:03d}._ibndmin.{1:03d}_ibndmax.{2:03d}.txt'.format(ik,ibnd_lst[0],ibnd_lst[-1])
+            miller_ids_fn = './Siesta2bgw.save/miller_ids.{0:03d}.txt'.format(ik)
             #print('Norm of unkg:', np.linalg.norm(unkg))
             np.savetxt(unkg_blst_fn, unkg_blst)
             np.savetxt(miller_ids_fn, miller_ids)
@@ -60,52 +62,37 @@ def main():
 
 
 
-class Unfold:
+class Siesta2bgw:
     def __init__(self, fdfname, ecut,
                  lowest_band=None, highest_band=None):
-        self.fdf = sisl.io.siesta.fdfSileSiesta(fdfname)
+
         self.ecut = ecut
-        self.geom = self.fdf.read_geometry()
-        self.cell = self.geom.cell
-#        print(geometry)
-        if comm.rank == 0:
-            print(self.cell) # in Ang unit
-        self.bcell = 2*np.pi*np.linalg.inv(self.cell).T # in Ang^-1 unit
-        if comm.rank == 0:
-            print(self.bcell) #
-        self.fdf_path = self.fdf.dir_file()
         self.lowest_band = lowest_band
         self.highest_band = highest_band
-        self.outdir = self.fdf_path.parents[0]
-        self.system_label = self.fdf.get('SystemLabel')
-        self.ef = self.fdf.read_fermi_level()
-        self._siesta = sisl.io.siesta._siesta
 
-
-        #########SiestaParser###############
-        self.wfsx_txt_file = f'{self.outdir}/{self.system_label}.bands.WFSX.txt'
-        if not os.path.exists(self.wfsx_txt_file):
-            self.error('[Error] .WFSX.txt file not found')
-            return
-        self.myparser = SiestaParser(wfsx_file_name=self.wfsx_txt_file)
-
-        self.wfsx_file = f'{self.outdir}/{self.system_label}.bands.WFSX'
-        if not os.path.exists(self.wfsx_file):
-            self.error('[Error] .WFSX file not found')
-            return
-        if comm.rank == 0 and self.myparser.noncolin:
-            print('This calculation is a non-collinear calculation')
-
-        # First query information
-        self.nspin, self.nou, self.nk, self.Gamma = self._siesta.read_wfsx_sizes(
-            self.wfsx_file)
-
-        if self.nspin in [4, 8]:
-            self._read_wfsx = self._siesta.read_wfsx_index_4
-        elif self.Gamma:
-            self._read_wfsx = self._siesta.read_wfsx_index_1
+        # Reading fdf only in root
+        if comm.rank == 0:
+            self.fdf   = sisl.io.siesta.fdfSileSiesta(fdfname)
+            self.geom  = self.fdf.read_geometry()
+            self.basis = self.fdf.read_basis()
+            self.system_label = self.fdf.get('SystemLabel')
+            self.fdf_path = self.fdf.dir_file()
         else:
-            self._read_wfsx = self._siesta.read_wfsx_index_2
+            self.fdf   = None
+            self.geom  = None
+            self.basis = None
+            self.system_label = None
+            self.fdf_path = None
+
+        # We don't bcast the fdf instance itself
+        self.geom  = comm.bcast(self.geom, 0)
+        self.basis = comm.bcast(self.basis, 0)
+        self.system_label = comm.bcast(self.system_label, 0)
+        self.fdf_path = comm.bcast(self.fdf_path, 0)
+
+        self.outdir = self.fdf_path.parents[0]
+        self.cell  = self.geom.cell
+        self.bcell = 2*np.pi*np.linalg.inv(self.cell).T # in Ang^-1 unit
 
 
         # setup band range in WFSX file
@@ -115,9 +102,24 @@ class Unfold:
         if self.highest_band is None:
             self.highest_band = self.nou
 
+        # Reading WFSX.txt with SiestaParser
+        self.wfsx_txt_file = f'{self.outdir}/{self.system_label}.bands.WFSX.txt'
+        if not os.path.exists(self.wfsx_txt_file):
+            self.error('[Error] .WFSX.txt file not found')
+            return None
 
-        self.nbnd = self.highest_band-self.lowest_band+1
-        self.basis = self.fdf.read_basis()
+        if comm.rank == 0:
+            self.myparser = SiestaParser(wfsx_file_name=self.wfsx_txt_file)
+        else:
+            self.myparser = None
+
+        self.myparser  = comm.bcast(self.myparser, 0)
+        self.nou       = self.myparser.nou
+        self.nk        = self.myparser.nk
+        self.noncolin  = self.myparser.noncolin
+
+        if comm.rank == 0 and self.myparser.noncolin:
+            print('This calculation is a non-collinear calculation')
 
         return None
 
@@ -140,6 +142,9 @@ class Unfold:
         where 3 represent px, py, pz
 
         """
+        if comm.rank == 0:
+            print(f'\nWe are now working on ik: {ik} ')
+
         ibnd_lst = np.array(ibnd_lst, dtype=np.int32)
         Ang2Bohr = sisl.unit.unit_convert('Ang', 'Bohr')
         #unkg = np.zeros(self.ngvec, dtype=np.cdouble)
@@ -164,6 +169,7 @@ class Unfold:
         if self.myparser.noncolin:
             state_dw  = self.myparser.coeff[ik-1,:,:,1]  # ik, ibnd, nou, ispin
             coeff_dw  = state_dw[ibnd_in_wfsx_lst[0]:ibnd_in_wfsx_lst[-1]+1,:]
+        #print(f'My rank is {comm.rank} and nwf is {nwf}')
 
         k = k_bohr * Ang2Bohr # Now k is in Ang^{-1} unit
 
