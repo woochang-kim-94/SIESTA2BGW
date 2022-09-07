@@ -1,8 +1,8 @@
 #import tim
 #import sys
+import os
 import numpy as np
 from mpi4py import MPI
-import os
 import sisl
 from siesta_parser import SiestaParser
 #from datetime import datetime as dt
@@ -28,15 +28,16 @@ def main():
     ################################################
     fdf_file = f'./input.fdf'
     ecut = 40.0*13.605693122994  # eV; good to be matched with the ecutwfc of QE
-    lowest_band  = 37             # lowest_band in WFSX file
-    highest_band = 56            # highest_band in WFSX file
+    lowest_band  = 37            # lowest_band in WFSX file
+    highest_band = 56         # highest_band in WFSX file
     #ik , ibnd = 31, 23           # both of them starting from 1
     ibnd_lst = list(range(lowest_band, highest_band+1))
     ik_lst = list(range(1,92))
     #ik_lst = [31]
     #print('ik, ibnd:', ik, ibnd)
     if comm.rank == 0:
-        print('ik_lst, ibnd_lst', ik_lst, ibnd_lst)
+        print('  ik_lst:', ik_lst)
+        print('ibnd_lst:', ibnd_lst)
 
 
     siesta2bgw = Siesta2bgw(fdfname=fdf_file,
@@ -50,13 +51,14 @@ def main():
         # save the wavefunction and FFT grid in numpy format
         ########################################################
         if comm.rank == 0:
-            if not os.path.exists('Siesta2bgw.save'):
-                os.mkdir('./Siesta2bgw.save')
-            unkg_blst_fn = './Siesta2bgw.save/unkg_blst._ik.{0:03d}._ibndmin.{1:03d}_ibndmax.{2:03d}.txt'.format(ik,ibnd_lst[0],ibnd_lst[-1])
-            miller_ids_fn = './Siesta2bgw.save/miller_ids.{0:03d}.txt'.format(ik)
-            #print('Norm of unkg:', np.linalg.norm(unkg))
+            if not os.path.exists('Siesta.save'):
+                os.mkdir('./Siesta.save')
+            unkg_blst_fn = 'Siesta.save/unkg_blst._ik.{0:03d}._ibndmin.{1:03d}_ibndmax.{2:03d}.txt'.format(ik,ibnd_lst[0],ibnd_lst[-1])
+            miller_ids_fn = 'Siesta.save/miller_ids.{0:03d}.txt'.format(ik)
             np.savetxt(unkg_blst_fn, unkg_blst)
             np.savetxt(miller_ids_fn, miller_ids)
+            #np.save("Unkg_k" + str(ik), unkg_blst)
+            #np.save("Gvecs_k"+ str(ik), miller_ids)
 
     return None
 
@@ -67,33 +69,32 @@ class Siesta2bgw:
                  lowest_band=None, highest_band=None):
 
         self.ecut = ecut
-        self.lowest_band = lowest_band
+        self.lowest_band  = lowest_band
         self.highest_band = highest_band
 
-        # Reading fdf only in root
-        if comm.rank == 0:
-            self.fdf   = sisl.io.siesta.fdfSileSiesta(fdfname)
-            self.geom  = self.fdf.read_geometry()
-            self.basis = self.fdf.read_basis()
-            self.system_label = self.fdf.get('SystemLabel')
-            self.fdf_path = self.fdf.dir_file()
-        else:
-            self.fdf   = None
-            self.geom  = None
-            self.basis = None
-            self.system_label = None
-            self.fdf_path = None
-
-        # We don't bcast the fdf instance itself
-        self.geom  = comm.bcast(self.geom, 0)
-        self.basis = comm.bcast(self.basis, 0)
-        self.system_label = comm.bcast(self.system_label, 0)
-        self.fdf_path = comm.bcast(self.fdf_path, 0)
-
-        self.outdir = self.fdf_path.parents[0]
+        #########Reading .fdf and .ion files#######################
+        self.fdf  = sisl.io.siesta.fdfSileSiesta(fdfname)
+        self.basis = self.fdf.read_basis()
+        self.geom  = self.fdf.read_geometry()
         self.cell  = self.geom.cell
         self.bcell = 2*np.pi*np.linalg.inv(self.cell).T # in Ang^-1 unit
+        self.fdf_path = self.fdf.dir_file()
+        self.outdir   = self.fdf_path.parents[0]
+        self.system_label = self.fdf.get('SystemLabel')
 
+
+        #########Reading WFSX.txt file using SiestaParser#########
+        self.wfsx_txt_file = f'{self.outdir}/{self.system_label}.bands.WFSX.txt'
+        if not os.path.exists(self.wfsx_txt_file):
+            self.error('[Error] .WFSX.txt file not found')
+            return
+
+        self.myparser  = SiestaParser(wfsx_file_name=self.wfsx_txt_file)
+        self.nou       = self.myparser.nou
+        self.nk        = self.myparser.nk
+
+        if comm.rank == 0 and self.myparser.noncolin:
+            print('This calculation is a non-collinear calculation')
 
         # setup band range in WFSX file
         if self.lowest_band is None:
@@ -102,24 +103,6 @@ class Siesta2bgw:
         if self.highest_band is None:
             self.highest_band = self.nou
 
-        # Reading WFSX.txt with SiestaParser
-        self.wfsx_txt_file = f'{self.outdir}/{self.system_label}.bands.WFSX.txt'
-        if not os.path.exists(self.wfsx_txt_file):
-            self.error('[Error] .WFSX.txt file not found')
-            return None
-
-        if comm.rank == 0:
-            self.myparser = SiestaParser(wfsx_file_name=self.wfsx_txt_file)
-        else:
-            self.myparser = None
-
-        self.myparser  = comm.bcast(self.myparser, 0)
-        self.nou       = self.myparser.nou
-        self.nk        = self.myparser.nk
-        self.noncolin  = self.myparser.noncolin
-
-        if comm.rank == 0 and self.myparser.noncolin:
-            print('This calculation is a non-collinear calculation')
 
         return None
 
@@ -128,26 +111,22 @@ class Siesta2bgw:
         ------
         Input
         ------
-        ik: k-point index. starting from 1
-        ibnd_lst: list of band index. starting from lowest occupied states
+        ik (int, scalar) : k-point index. starting from 1
+        ibnd_lst (int, array): list of band index. starting from lowest occupied states
 
         ------
         output
         ------
-        unkg:{<k+G|psi_nk>}
-        miller_ids: miller index of planewave basis
-
-        unkg is an array of
-        arrary(igvec) in complex
-        where 3 represent px, py, pz
+        unkg (cdouble, nbnd x ngw): {<k+G|psi_nk>}
+            For non-collinear case, len of array doubled
+        miller_ids (int64, ngw x 1) : miller index of planewave basis
 
         """
         if comm.rank == 0:
-            print(f'\nWe are now working on ik: {ik} ')
+            print(f'\nWe are working on the ik: {ik}')
 
-        ibnd_lst = np.array(ibnd_lst, dtype=np.int32)
         Ang2Bohr = sisl.unit.unit_convert('Ang', 'Bohr')
-        #unkg = np.zeros(self.ngvec, dtype=np.cdouble)
+        ibnd_lst = np.array(ibnd_lst, dtype=np.int32)
         nbnd = len(ibnd_lst)
         ibnd_in_wfsx_lst = ibnd_lst - self.lowest_band
 
@@ -160,145 +139,140 @@ class Siesta2bgw:
             io2ioa[io] = io-self.geom.atoms.firsto[ia]
             io2isp[io] = self.geom.atoms.specie[ia]
 
-        # k is in Bohr^{-1} unit
-        k_bohr = self.myparser.kpoints[ik-1]
-        nwf    = self.myparser.nwf
-        eig    = self.myparser.enk[ik-1,:]
+        # k_bohr is in Bohr^{-1} unit
+        k_bohr    = self.myparser.kpoints[ik-1]
+        nwf       = self.myparser.nwf
+        #eig       = self.myparser.enk[ik-1,:]
         state_up  = self.myparser.coeff[ik-1,:,:,0]  # ik, ibnd, nou, ispin
         coeff_up  = state_up[ibnd_in_wfsx_lst[0]:ibnd_in_wfsx_lst[-1]+1,:]
         if self.myparser.noncolin:
-            state_dw  = self.myparser.coeff[ik-1,:,:,1]  # ik, ibnd, nou, ispin
+            state_dw  = self.myparser.coeff[ik-1,:,:,1]
             coeff_dw  = state_dw[ibnd_in_wfsx_lst[0]:ibnd_in_wfsx_lst[-1]+1,:]
-        #print(f'My rank is {comm.rank} and nwf is {nwf}')
 
         k = k_bohr * Ang2Bohr # Now k is in Ang^{-1} unit
 
         if comm.rank == 0:
             print('Generating FFT grid')
-        igvec_at_k = self.find_igvec_at_k(k, self.bcell, self.ecut)
-        gvec_at_k = igvec_at_k.dot(self.bcell) # Ang^{-1}
+            igvec_at_k = self.find_igvec_at_k(k, self.bcell, self.ecut)
+            ave, res = divmod(len(igvec_at_k), comm.size)
+			# count[rank] contains the number of g-vectors to be processed
+            # by each rank
+            count = [ave + 1 if p < res else ave for p in range(comm.size)]
+            count = np.array(count)*3
+            #print("Count, sum:",count, np.sum(count))
+			# displ[rank] contains the starting index of the g-vectors
+            # to be processed by the rank
+            displ = [sum(count[:p]) for p in range(comm.size)]
+            displ = np.array(displ)
+            #print("displ:", displ)
+        else:
+            igvec_at_k = None
+            count = np.zeros(comm.size, dtype=np.int64)
+            displ = np.zeros(comm.size, dtype=np.int64)
+        comm.Bcast(count, root=0)
+        comm.Bcast(displ, root=0)
+
+        # Create a local igvec_at_k on each rank with a subset of ng
+        igvec_at_k_loc = np.zeros((int(count[comm.rank]/3), 3), dtype = np.int64)
+
+        # Scatter igvec_at_k from 0 to all processes
+        # Each rank will hold count[rank] number of gvectors
+        comm.Scatterv([igvec_at_k, count, displ, MPI.LONG], igvec_at_k_loc, root=0)
+
+        #print("rank:", comm.rank, "igvec size:", len(igvec_at_k_loc), "igvec_loc[0:10]",
+        #       igvec_at_k_loc[0:10])
+
+        # gvec is only computed for the local set of igvec
+        gvec_at_k_loc = igvec_at_k_loc.dot(self.bcell) # Ang^{-1}
         if comm.rank == 0:
             print('Number of FFT grid:', len(igvec_at_k))
+            print(f'Number of FFT grid at rank {comm.rank}:', len(igvec_at_k_loc))
 
-        phase = np.zeros(
-        (len(igvec_at_k), len(pos)), dtype=np.cdouble) #len(pos) = # ia
-
-        for ig, g in enumerate(gvec_at_k):
-            phase[ig, :] = np.exp(-1j*pos.dot(g))   # gauge convention 1
-            #phase[ig, :] = 1.0                     # gauge convention 2
-
-        unkg_up = np.zeros((nbnd, len(igvec_at_k)), dtype=np.cdouble)
+        # unkg for only the local set of gvecs
+        unkg_up_loc = np.zeros((nbnd, len(igvec_at_k_loc)), dtype=np.cdouble)
         if self.myparser.noncolin:
-            unkg_dw = np.zeros((nbnd, len(igvec_at_k)), dtype=np.cdouble)
-
-        ngs_pp = int(len(igvec_at_k)/comm.size)
-        Grange = range(len(igvec_at_k))
-        ig_rank = []
-        for ip in range(comm.size):
-            ig_rank.append(Grange[ip:len(Grange):comm.size])
+            unkg_dw_loc = np.zeros((nbnd, len(igvec_at_k_loc)), dtype=np.cdouble)
 
         if comm.rank == 0:
             print('starting G vector loop')
-        #for ig, g in enumerate(gvec_at_k):
-
 
         if self.myparser.noncolin:
-            for ig in ig_rank[comm.rank]:
-                #kpg = k+g # in Ang^{-1}
-                gvec = gvec_at_k[ig]
-                kpg = k+gvec # in Ang^{-1}
+            for ig, g in enumerate(gvec_at_k_loc):
+                kpg = k+g # in Ang^{-1}
+
+                # Generate the phase factor for each atom position
+                phase_at_g    = np.zeros(len(pos), dtype=np.cdouble) # len(pos) = # of ia
+                phase_at_g[:] = np.exp(-1j*pos.dot(g))   # gauge convention 1
+
                 # First we calculate all the FT of PAO basis
                 PAO_FT = self.calc_PAO_FT(kpg) # len(isp) x len(ioa)
                 ftfac = np.zeros(self.nou, dtype=np.cdouble)
 
                 for ia, io in self.geom.iter_orbitals(local=False):
                     ftfac[io] = PAO_FT[io2isp[io]][io2ioa[io]]
-                orbfac = phase[ig, io2ia[:]] * ftfac # len = num(io)
+                orbfac = phase_at_g[io2ia[:]] * ftfac # len = num(io)
 
-                #for ibnd in range(len(ibnd_in_wfsx_lst)):
-                #    #matel = np.einsum('i,i', orbfac, coeff[:,ibnd])
-                #    matel_up = np.einsum('i,i', orbfac, coeff_up[ibnd,:])
-                #    matel_dw = np.einsum('i,i', orbfac, coeff_dw[ibnd,:])
-                #    #matel /= np.sqrt(self.geom.volume)
-                #    unkg_up[ibnd,ig] = matel_up
-                #    unkg_dw[ibnd,ig] = matel_dw
-
-                unkg_up[:,ig] = np.einsum('i,ni->n', orbfac, coeff_up)
-                unkg_dw[:,ig] = np.einsum('i,ni->n', orbfac, coeff_dw)
-
+                unkg_up_loc[:,ig] = np.einsum('i,ni->n', orbfac, coeff_up)
+                unkg_dw_loc[:,ig] = np.einsum('i,ni->n', orbfac, coeff_dw)
 
             if comm.rank == 0:
-                unkg_up_coll = np.zeros_like(unkg_up)
-                unkg_dw_coll = np.zeros_like(unkg_dw)
+                unkg_up = np.zeros((nbnd, int(sum(count)/3)), dtype = np.cdouble)
+                unkg_dw = np.zeros((nbnd, int(sum(count)/3)), dtype = np.cdouble)
             else:
-                unkg_up_coll = None
-                unkg_dw_coll = None
-            comm.Reduce(
-                     [unkg_up, MPI.COMPLEX16],
-                     [unkg_up_coll, MPI.COMPLEX16],
-                      op = MPI.SUM,
-                      root = 0
-                    )
-            comm.Reduce(
-                     [unkg_dw, MPI.COMPLEX16],
-                     [unkg_dw_coll, MPI.COMPLEX16],
-                      op = MPI.SUM,
-                      root = 0
-                    )
+                unkg_up = np.zeros((nbnd,2))
+                unkg_dw = np.zeros((nbnd,2))
+
+            for ib in range(nbnd): # For memory safeness, we collect wfcs 1 by 1
+                comm.Gatherv(unkg_up_loc[ib,:], [unkg_up[ib,:], (count/3).astype(int), (displ/3).astype(int), MPI.COMPLEX16], root=0)
+                comm.Gatherv(unkg_dw_loc[ib,:], [unkg_dw[ib,:], (count/3).astype(int), (displ/3).astype(int), MPI.COMPLEX16], root=0)
+
             if comm.rank == 0:
                 print('end of G vector loop')
 
             if comm.rank == 0:
-                unkg = np.concatenate((unkg_up_coll, unkg_dw_coll),axis=1)
+                unkg = np.concatenate((unkg_up, unkg_dw),axis=1)
                 unkg /= np.sqrt(self.geom.volume)
-                #Renormalization is not necessory but we do anyway...
-                #unkg /= np.linalg.norm(unkg)
+                #Normalization part need to be implemented
                 return unkg, igvec_at_k
             else:
-                return 0,0
+                return None, None
 
 
-        else:
-            for ig in ig_rank[comm.rank]:
-                #kpg = k+g # in Ang^{-1}
-                gvec = gvec_at_k[ig]
-                kpg = k+gvec # in Ang^{-1}
+        else: # it is a collinear case
+            for ig, g in enumerate(gvec_at_k_loc):
+                kpg = k+g # in Ang^{-1}
+
+                # Generate the phase factor for each atom position
+                phase_at_g    = np.zeros(len(pos), dtype=np.cdouble) # len(pos) = # of ia
+                phase_at_g[:] = np.exp(-1j*pos.dot(g))   # gauge convention 1
+
                 # First we calculate all the FT of PAO basis
                 PAO_FT = self.calc_PAO_FT(kpg) # len(isp) x len(ioa)
                 ftfac = np.zeros(self.nou, dtype=np.cdouble)
 
                 for ia, io in self.geom.iter_orbitals(local=False):
                     ftfac[io] = PAO_FT[io2isp[io]][io2ioa[io]]
-                orbfac = phase[ig, io2ia[:]] * ftfac # len = num(io)
+                orbfac = phase_at_g[io2ia[:]] * ftfac # len = num(io)
 
-                #for ibnd in range(len(ibnd_in_wfsx_lst)):
-                #    matel_up = np.einsum('i,i', orbfac, coeff_up[ibnd,:])
-                #    unkg_up[ibnd,ig] = matel_up
-
-                unkg_up[:,ig] = np.einsum('i,ni->n', orbfac, coeff_up)
-
+                unkg_up_loc[:,ig] = np.einsum('i,ni->n', orbfac, coeff_up)
 
             if comm.rank == 0:
-                unkg_up_coll = np.zeros_like(unkg_up)
+                unkg_up = np.zeros((nbnd, int(sum(count)/3)), dtype = np.cdouble)
             else:
-                unkg_up_coll = None
-            comm.Reduce(
-                     [unkg_up, MPI.COMPLEX16],
-                     [unkg_up_coll, MPI.COMPLEX16],
-                      op = MPI.SUM,
-                      root = 0
-                    )
+                unkg_up = np.zeros((nbnd,2))
+
+            for ib in range(nbnd): # For memory safeness, we collect wfcs 1 by 1
+                comm.Gatherv(unkg_up_loc[ib,:], [unkg_up[ib,:], (count/3).astype(int), (displ/3).astype(int), MPI.COMPLEX16], root=0)
+
             if comm.rank == 0:
                 print('end of G vector loop')
 
             if comm.rank == 0:
-                unkg_up_coll /= np.sqrt(self.geom.volume)
-                #Renormalization is not necessory but we do anyway...
-                #unkg /= np.linalg.norm(unkg)
-
-                return unkg_up_coll, igvec_at_k
+                unkg_up /= np.sqrt(self.geom.volume)
+                #Normalization part need to be implemented
+                return unkg_up, igvec_at_k
             else:
-                return 0,0
+                return None, None
 
 
     def calc_PAO_FT(self, k, nr=500):
@@ -420,13 +394,13 @@ class Siesta2bgw:
 
         # find nmax such that (nmax*bcell[idir,:])^2 < ecut along each direction.
         b2 = np.sum(bcell**2, axis=1)
-        nmax = np.int32(2*np.sqrt(ecut/b2))
+        nmax = np.int64(2*np.sqrt(ecut/b2))
 
         n1 = np.arange(-nmax[0], nmax[0]+1)
         n2 = np.arange(-nmax[1], nmax[1]+1)
         n3 = np.arange(-nmax[2], nmax[2]+1)
         # n1grid, n1grid, n3grid = np.meshgrid(n1, n2, n3)
-        igvec_all = np.int32([(i, j, k) for i in n1 for j in n2 for k in n3])
+        igvec_all = np.int64([(i, j, k) for i in n1 for j in n2 for k in n3])
         shifted_igvec_all = igvec_all + k_crys
         shifted_gvec = shifted_igvec_all.dot(bcell)
         shifted_g2 = np.einsum('ix,ix->i', shifted_gvec, shifted_gvec)
