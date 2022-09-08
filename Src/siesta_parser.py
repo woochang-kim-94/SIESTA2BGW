@@ -1,3 +1,10 @@
+"""
+Update
+2022.Sep.08: Modifying the skipping header part using 'While' statement
+"""
+
+
+
 import numpy as np
 import os
 
@@ -55,9 +62,13 @@ class SiestaParser:
 
     #    print(f'Start reading the {self.wfsx_fn}')
         f = open(self.wfsx_fn, 'r')
-        f.readline()
-        self.nk = np.int32(f.readline().split()[-1])
-        line = f.readline() #Nr of Spins blocks
+        line = ''
+        while not 'Nr of k-points' in line:
+            line = f.readline()
+        self.nk = np.int32(line.split()[-1])
+
+        while not 'Nr of Spins blocks' in line:
+            line = f.readline()
         if 'non-collinear' in line:
             self.noncolin = True
             self.nspinblock = np.int32(line.split()[-1])
@@ -65,8 +76,11 @@ class SiestaParser:
             self.noncolin = False
             self.nspinblock = np.int32(line.split()[-1])
 
-        line = f.readline()
+
+        while not 'Nr of basis orbs' in line:
+            line = f.readline()
         self.nou = np.int32(line.split()[-1])
+
         #Now we know the shapes of following quantities
         self.kpoints = np.zeros((self.nk,3), dtype=np.float64)
         self.io2ia = np.zeros(self.nou, dtype=np.int32)
